@@ -1,0 +1,11 @@
+# Usually you don't need to sync sources back from remote to local machine.
+.c
+.h
+.cpp
+/cocos2d
+/linux-build
+/proj.android-studio/build
+/proj.android-studio/.gradle
+/proj.android-studio/app/build/generated
+/proj.android-studio/app/build/tmp
+/proj.android-studio/app/.externalNativeBuild

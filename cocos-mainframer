@@ -1,0 +1,173 @@
+#!/usr/bin/python
+# ----------------------------------------------------------------------------
+# mainframer command line tool for cocos2d-x
+#
+# Based on code with copyright 2013 (C) Luis Parravicini
+# Copyright 2017 (C) EM ALL Studio
+#
+# License: MIT
+# ----------------------------------------------------------------------------
+'''
+mainframer command line tool for cocos2d-x
+'''
+
+import argparse
+import os
+import sys
+import re
+from xml.dom import minidom
+import subprocess
+
+adb_path = 'adb'
+
+# get project name
+def getProjectName():
+    project_name = None
+    if args.p == 'linux':
+        # linux project name
+        f = open('CMakeLists.txt', 'r')
+        regexp_set_app_name = re.compile(r'\s*set\s*\(\s*APP_NAME', re.IGNORECASE)
+        for line in f.readlines():
+            if regexp_set_app_name.search(line):
+                project_name = re.search('APP_NAME ([^\)]+)\)', line, re.IGNORECASE).group(1)
+                break
+
+        if project_name is None:
+            raise "Cauldn't find APP_NAME in CMakeLists.txt"
+    else:        
+        if args.use_studio:
+            # android studio project name
+            assets_dir = os.path.join('proj.android-studio', "app", "assets")
+            setting_file = os.path.join('proj.android-studio', 'settings.gradle')
+            if os.path.isfile(setting_file):
+                # get project name from settings.gradle
+                f = open(setting_file)
+                lines = f.readlines()
+                f.close()
+
+                pattern = r"project\(':(.*)'\)\.projectDir[ \t]*=[ \t]*new[ \t]*File\(settingsDir, 'app'\)"
+                for line in lines:
+                    line_str = line.strip()
+                    match = re.match(pattern, line_str)
+                    if match:
+                        project_name = match.group(1)
+                        break
+
+            if project_name is None:
+                # use default project name
+                project_name = 'app'
+        else:
+            # android project name
+            project_name = _xml_attr('proj.android', 'build.xml', 'project', 'name')
+
+    return project_name
+
+# get xml attribute value
+def _xml_attr(dir, file_name, node_name, attr):
+    doc = minidom.parse(os.path.join(dir, file_name))
+    return doc.getElementsByTagName(node_name)[0].getAttribute(attr)
+
+# get apk file config
+def get_apk_info():
+    if args.use_studio:
+        manifest_path = os.path.join('proj.android-studio', 'app')
+        gradle_cfg_path = os.path.join(manifest_path, 'build.gradle')
+        package = None
+        if os.path.isfile(gradle_cfg_path):
+            # get package name from build.gradle
+            f = open(gradle_cfg_path)
+            for line in f.readlines():
+                line_str = line.strip()
+                pattern = r'applicationId[ \t]+"(.*)"'
+                match = re.match(pattern, line_str)
+                if match:
+                    package = match.group(1)
+                    break
+
+        if package is None:
+            # get package name from AndroidManifest.xml
+            package = _xml_attr(manifest_path, 'AndroidManifest.xml', 'manifest', 'package')
+    else:
+        manifest_path = 'proj.android'
+        package = _xml_attr(manifest_path, 'AndroidManifest.xml', 'manifest', 'package')
+
+    activity_name = _xml_attr(manifest_path, 'AndroidManifest.xml', 'activity', 'android:name')
+    if activity_name.startswith('.'):
+        activity = package + activity_name
+    else:
+        activity = activity_name
+    ret = (package, activity)
+
+    return ret
+
+# run command
+def _run_cmd(command):
+    sys.stdout.flush()
+    ret = subprocess.call(command, shell=True, cwd=None)
+    if ret != 0:
+       raise "Error running command - %s" % (command)
+
+# command line args
+parser = argparse.ArgumentParser()
+subparsers = parser.add_subparsers(help='Cocos run mode')
+parser_run = subparsers.add_parser('run', help='run help')
+parser_run.set_defaults(which='run')
+parser_run.add_argument('-force_recompile', default=False, help='Force recompile')
+parser_run.add_argument('-p', default='linux', choices=['linux', 'android'], help='Platform (linux/android)')
+parser_run.add_argument('-m', default='debug', choices=['debug', 'release'], help='Compile mode (debug/release)')
+parser_run.add_argument('--android-studio', dest='use_studio', action='store_true', help='Use android studio project')
+
+parser_compile = subparsers.add_parser('compile', help='compile help')
+parser_compile.set_defaults(which='compile')
+parser_compile.add_argument('-force_recompile', default=False, help='Force recompile')
+parser_compile.add_argument('-p', default='linux', choices=['linux', 'android'], help='Platform (linux/android)')
+parser_compile.add_argument('-m', default='debug', choices=['debug', 'release'], help='Compile mode (debug/release)')
+parser_compile.add_argument('--android-studio', dest='use_studio', action='store_true', help='Use android studio project')
+args, unknown = parser.parse_known_args()
+
+# force recompile arg
+if args.force_recompile <> False:
+    if args.p == 'linux':
+        # remove remote build folder for linux
+        force_recompile_cmd = "rm -rf linux-build bin"
+    else:
+        # remove remote build folders for android
+        if args.use_studio == True:
+            force_recompile_cmd = "rm -rf bin proj.android-studio/build proj.android-studio/app/build proj.android-studio/app/.externalNativeBuild cocos2d/cocos/platform/android/libcocos2dx/build/*"
+        else:
+            force_recompile_cmd = "rm -rf bin proj.android/build cocos2d/cocos/platform/android/libcocos2dx/build/*"
+    print force_recompile_cmd
+    _run_cmd("./mainframer " + force_recompile_cmd)
+
+use_studio = ""
+if args.use_studio:
+    use_studio = "--android-studio"
+
+mainframer_cmd = "./mainframer cocos compile -p %s %s -m %s %s" % (args.p, use_studio, args.m, " ".join(unknown))
+
+# run mainframer
+_run_cmd(mainframer_cmd)
+
+# local run
+if args.which == 'run':
+    project_name = getProjectName()
+    if args.p == 'linux':
+        startapp = "bin/%s/%s/%s" % (args.m, args.p, project_name)
+    else:
+        if (args.m == 'debug'):
+            apk_name = '%s-%s.apk' % (project_name, args.m)
+        else:
+            apk_name = '%s-%s-signed.apk' % (project_name, args.m)
+        apk_folder = "bin/%s/%s" % (args.m, args.p)
+        apk_path = os.path.join(apk_folder, apk_name)
+        android_package, android_activity = get_apk_info()
+        adb_uninstall = "%s uninstall %s" % (adb_path, android_package)
+        adb_install = "%s install -r \"%s\"" % (adb_path, apk_path)
+        startapp = "%s shell am start -n \"%s/%s\"" % (adb_path, android_package, android_activity)
+        # uninstall apk
+        _run_cmd(adb_uninstall)
+        # install apk
+        _run_cmd(adb_install)
+
+    # local run app/apk
+    _run_cmd(startapp)
